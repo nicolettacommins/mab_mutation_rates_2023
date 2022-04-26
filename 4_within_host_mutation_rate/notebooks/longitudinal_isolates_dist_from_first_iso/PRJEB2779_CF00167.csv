@@ -1,0 +1,4 @@
+index,BioSample,collection_year,collection_month,collection_day,BioProject,days_from_first_isolate,snp_dist_from_first_isolate,patient_id
+1570,SAMN09758933,2016,1.0,1.0,PRJNA319839,,,
+1571,SAMN09758934,2016,1.0,1.0,PRJNA319839,0.0,0.0,PRJEB2779_CF00167
+1572,SAMN09758935,2016,1.0,1.0,PRJNA319839,0.0,1.0,PRJEB2779_CF00167

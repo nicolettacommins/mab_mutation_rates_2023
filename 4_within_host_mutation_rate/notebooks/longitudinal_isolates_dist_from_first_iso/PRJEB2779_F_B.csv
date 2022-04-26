@@ -1,0 +1,4 @@
+index,BioSample,collection_year,collection_month,collection_day,BioProject,days_from_first_isolate,snp_dist_from_first_isolate,patient_id
+879,SAMEA2259585,2010,1.0,1.0,PRJEB2779,,,
+880,SAMEA2259586,2010,1.0,1.0,PRJEB2779,0.0,1.0,PRJEB2779_F_B
+996,SAMEA2259719,2012,1.0,1.0,PRJEB2779,730.0,4741.0,PRJEB2779_F_B

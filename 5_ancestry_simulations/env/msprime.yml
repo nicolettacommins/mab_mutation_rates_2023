@@ -1,0 +1,14 @@
+name: msprime-env
+channels:
+  - conda-forge
+  - defaults
+  - bioconda
+dependencies:
+  - pandas
+  - pip
+  - numpy
+  - msprime
+  - matplotlib
+  - biopython
+  - dendropy
+prefix: /home/nac18/anaconda3/envs/msprime-env

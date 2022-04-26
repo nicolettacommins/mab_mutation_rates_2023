@@ -1,0 +1,14 @@
+name: homoplasy
+channels:
+  - conda-forge
+  - defaults
+  - bioconda
+dependencies:
+  - pandas
+  - biopython
+  - numpy
+  - python=3.6
+  - ete3
+  - dendropy
+  - seaborn
+prefix: /home/nac18/anaconda3/envs/homoplasy

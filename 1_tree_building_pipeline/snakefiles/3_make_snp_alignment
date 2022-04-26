@@ -1,0 +1,78 @@
+####################
+
+# Purpose: Takes SNP calls from Pilon and generates a set of full-length pseudogenomes for input into Gubbins
+# NOTE: Designed to run with a list of samples belonging to one subspecies only. Run independently for different subsp by changing the config file.
+
+###################
+
+# get run start date for keeping track of logs
+from datetime import datetime
+run_start_date = datetime.now().strftime("%Y%m%d")
+
+# read in samples from config file
+with open(config["biosamples"], "r") as inp:
+	biosamples=inp.read().splitlines()
+
+rule all:
+	input:  
+		config["final_MSA"]
+		
+
+###REFERENCE SEQUENCE
+
+rule get_reference: #copy the reference to add it to the pipeline
+	input: config["path_to_ref"]
+	output: config["fasta_dir"]+ref+"/"+ref+"_filtered.fasta"
+	shell:
+		"""
+		cp {input} {output}
+		"""
+
+## MABSC SAMPLES
+
+rule filter_pilon_vcf: #filter vcf output of pilon
+	input: config["results_dir"]+"{upid_sample}/pilon/{upid_sample}_full.vcf.gz" 
+	output: config["scratch_dir"]+"filtered_vcfs/{upid_sample}/{upid_sample}_filtered.vcf" #output to scratch because the files will be large
+	log: config["log_dir"]+"filter_pilon_vcf/"+run_start_date+"/{upid_sample}.log"
+	shell:
+		"""
+		bcftools view {input} --include "MQ>=20 && BQ>=20" -f .,PASS -O v -o {output} > {log} 2>&1
+		"""
+
+rule pilon_vcf2fasta: # convert filtered vcfs into a pseudogenome fasta sequence
+	input: config["scratch_dir"]+"filtered_vcfs/{upid_sample}/{upid_sample}_filtered.vcf"
+	output: config["fasta_dir"]+"{upid_sample}/{upid_sample}_filtered.fasta" 
+	log: config["log_dir"]+"vcf2fasta/"+run_start_date+"/{upid_sample}.log"
+	shell:
+		"""
+		python3 {config[scripts_dir]}pilonVCFtoFasta.py {input} {output} > {log} 2>&1
+		"""
+
+### MASK AND COMBINE ALL FASTAS
+
+rule mask_fasta: # mask all the input fastas
+	input: config["fasta_dir"]+"{sample}/{sample}_filtered.fasta"
+	output: config["fasta_dir"]+"{sample}/{sample}_masked.fasta"
+	log: "logs/mask_fasta/"+run_start_date+"/{sample}.log"
+	shell:
+		"""
+		bedtools maskfasta -fi {input} -fo {output} -bed {config[regions_to_mask]} > {log} 2>&1
+		"""
+
+rule rename_fasta: #rename all the input fastas
+	input: config["fasta_dir"]+"{sample}/{sample}_masked.fasta"
+	output: config["fasta_dir"]+"{sample}/{sample}_masked_renamed.fasta"
+	log: "logs/rename_fasta/"+run_start_date+"/{sample}.log"
+	shell:
+		"""
+		sed 's/^>.*/>{wildcards.sample}/' {input} > {output} 
+		"""
+
+rule cat_MSA: # combine into a MSA
+	input: expand(config["fasta_dir"]+"{sample}/{sample}_masked_renamed.fasta", sample=samples)
+	output: config["final_MSA"]
+	log:"logs/cat_MSA/"+run_start_date+".log"
+	shell: 
+		"""
+		cat {input} > {output} 
+		"""

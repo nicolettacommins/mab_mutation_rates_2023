@@ -1,0 +1,181 @@
+
+####################
+
+# Designed to be run with a table matching all the BioSamples to the Run IDs. Each sample in the pipeline is a BioSample, NOT a Run ID as 
+# in the first part of the pipeline. The first step combines all runs from one BioSample into a single fastq file. The rest of the pipeline
+# does read mapping and variant calling.
+
+###################
+
+import pandas as pd
+with open(config["summary_runs"], "r") as inp:
+	samples=pd.read_csv(inp, sep='\t').biosample.tolist()
+genomes=['GCF_000069185.1', 'GCF_000497265.2', 'GCF_003609715.1']
+
+rule all:
+	input:  
+		expand(config["fastq_dir"]+"combined/{sample}_1_combined.fastq", sample=samples),
+		expand(config["fastq_dir"]+"combined/{sample}_2_combined.fastq", sample=samples),
+		expand(config["spades_dir"]+"{sample}/contigs.fasta", sample=samples),
+		expand(config["spades_dir"]+"{sample}/scaffolds.fasta", sample=samples),
+		expand(config["ani_dir"]+"{sample}.txt", sample=samples),
+		expand(config["subsp_assign_dir"]+"{sample}.txt", sample=samples),
+		expand(config["indexed_dir"]+"{genome}/{genome}.bwt", genome=genomes),
+		expand(config["mapped_dir"]+"{sample}/{sample}.sam", sample=samples),
+		expand(config["mapped_dir"]+"{sample}/{sample}.bam", sample=samples),
+		expand(config["results_dir"]+"{sample}/bam/{sample}.duprem.bam", sample=samples),
+		expand(config["results_dir"]+"{sample}/depth/{sample}.depth", sample=samples),
+		expand(config["results_dir"]+"{sample}/bam/{sample}.duprem.bam.bai", sample=samples),
+		expand(config["results_dir"]+"{sample}/pilon/{sample}.vcf", sample=samples)
+
+
+rule combine_runs:
+	output: 
+		config["fastq_dir"]+"combined/{sample}_1_combined.fastq",
+		config["fastq_dir"]+"combined/{sample}_2_combined.fastq"
+	log:
+		config["log_dir"]+"combine_runs/{sample}_combine_runs.txt"
+	shell:
+		"""
+		python3 {config[scripts_dir]}combine_runs.py {wildcards.sample} {config[summary_runs]} {config[trimmed_dir]}trimmed {config[fastq_dir]} > {log} 2>&1
+		"""
+
+rule spades:
+	input:
+		read1=config["fastq_dir"]+"combined/{sample}_1_combined.fastq",
+		read2=config["fastq_dir"]+"combined/{sample}_2_combined.fastq"
+	output:
+		contigs=config["spades_dir"]+"{sample}/contigs.fasta",
+		scaffolds=config["spades_dir"]+"{sample}/scaffolds.fasta"
+	log:
+		config["log_dir"]+"spades/{sample}.log"
+	threads: 16
+	shell:
+		"""
+		spades.py -1 {input.read1} -2 {input.read2} -t {threads} --tmp-dir {config[temp_dir]}spades_test -o {config[spades_dir]}{wildcards.sample} --careful > {log} 2>&1
+		"""
+
+rule ani: #in the future, create ref_list.txt in snakemake, and make the reference names compatible with the bwa rule. in this snakefile, i have to convert the names in subsp_assign.py
+	input:
+		config["spades_dir"]+"{sample}/scaffolds.fasta"
+	output:
+		config["ani_dir"]+"{sample}.txt"
+	log:
+		config["log_dir"]+"ani/{sample}.log"
+	shell:
+		"""
+		/home/nac18/sw/bin/fastANI -q {input} --rl {config[reference_dir]}ref_list.txt -o {config[ani_dir]}{wildcards.sample}.txt > {log} 2>&1
+		"""
+
+checkpoint subsp_assign: 
+	input:
+		config["ani_dir"]+"{sample}.txt"
+	output:
+		config["subsp_assign_dir"]+"{sample}.txt"
+	log: 
+		config["log_dir"]+"subsp_assign/{sample}.log"
+	shell:
+		"""
+		python3 {config[scripts_dir]}subsp_assign.py {input} {output} > {log} 2>&1
+		"""
+
+rule bwa_index: #need to define genomes
+	input:
+		config["reference_dir"]+"{genome}/{genome}.fna"
+	output:
+		config["indexed_dir"]+"{genome}/{genome}.bwt"
+	log:
+		config["log_dir"]+"bwa_index/{genome}.log"
+	shell:
+		"""
+		bwa index {input} -p {config[indexed_dir]}{wildcards.genome}/{wildcards.genome} 2> {log}
+		"""
+
+def checkpoint_bwa_mem(wildcards):
+	with open(checkpoints.subsp_assign.get(sample=wildcards.sample).output[0], "r") as f:
+		ref=f.read().strip()
+		return config["indexed_dir"]+"{}/{}".format(ref,ref)
+
+def checkpoint_pilon(wildcards):
+	with open(checkpoints.subsp_assign.get(sample=wildcards.sample).output[0], "r") as f:
+		ref=f.read().strip()
+		return config["reference_dir"]+"{}/{}.fna".format(ref,ref)
+
+rule bwa_mem:
+	input:
+		reads=[config["fastq_dir"]+"combined/{sample}_1_combined.fastq", config["fastq_dir"]+"combined/{sample}_2_combined.fastq"],
+		assignment=config["subsp_assign_dir"]+"{sample}.txt"
+		#expand("indexed/{genome}/{genome}.bwt", genome=genomes)# if things aren't running in order this might help, but for now it seems to be working fine
+	output:
+		config["mapped_dir"]+"{sample}/{sample}.sam",
+	params:
+		index=checkpoint_bwa_mem
+	log:
+		config["log_dir"]+"bwa_mem/{sample}.log"
+	shell:
+		"""
+		bwa mem -M {params.index} {input.reads} > {output} 2> {log}
+		"""
+
+rule sort_convert_tobam:
+	input:
+		config["mapped_dir"]+"{sample}/{sample}.sam"
+	output:
+		config["mapped_dir"]+"{sample}/{sample}.bam"
+	log:
+		config["log_dir"]+"sort_convert_tobam/{sample}.log"
+	shell:
+		"""
+		java -Xmx16G -jar {config[path_to_picard]} SortSam INPUT={input} OUTPUT={output} SORT_ORDER=coordinate > {log} 2>&1
+		"""
+
+rule remove_duplicates:
+	input:
+		config["mapped_dir"]+"{sample}/{sample}.bam"
+	output:
+		outfile=config["results_dir"]+"{sample}/bam/{sample}.duprem.bam", metrics=config["temp_dir"]+"results/{sample}/bam/{sample}.metrics" 
+	log:
+		config["log_dir"]+"duprem/{sample}.log"
+	shell:
+		"""
+		java -Xmx32G -jar {config[path_to_picard]} MarkDuplicates I={input} O={output.outfile} REMOVE_DUPLICATES=true M={output.metrics} ASSUME_SORT_ORDER=coordinate > {log} 2>&1
+		"""
+
+rule calculate_depth:
+	input:
+		config["results_dir"]+"{sample}/bam/{sample}.duprem.bam"
+	output:
+		config["results_dir"]+"{sample}/depth/{sample}.depth"
+	log:
+		config["log_dir"]+"calc_depth/{sample}.log"
+	shell:
+		"""
+		samtools depth -a {input} > {config[results_dir]}{wildcards.sample}/depth/{wildcards.sample}.depth 2> {log}
+		"""
+
+rule indexing_bam:
+	input:
+		bam=config["results_dir"]+"{sample}/bam/{sample}.duprem.bam"
+	output:
+		config["results_dir"]+"{sample}/bam/{sample}.duprem.bam.bai"
+	log:
+		config["log_dir"]+"{sample}/indexing_bam.txt"
+	shell:
+		"samtools index {input.bam} > {log} 2>&1"
+
+
+rule variant_calling:
+	input:
+		bam=config["results_dir"]+"{sample}/bam/{sample}.duprem.bam", bai=config["results_dir"]+"{sample}/bam/{sample}.duprem.bam.bai", genome=checkpoint_pilon
+	output:
+		config["results_dir"]+"{sample}/pilon/{sample}.vcf", config["results_dir"]+"{sample}/pilon/{sample}.fasta", config["results_dir"]+"{sample}/pilon/{sample}_full.vcf.gz" 
+	log:
+		config["log_dir"]+"{sample}/variant_calling.txt"
+	shell:
+		"""
+		pilon -Xmx32G --genome {input.genome} --bam {input.bam} --output {config[results_dir]}{wildcards.sample}/pilon/{wildcards.sample} --variant > {log} 2>&1
+		mv {config[results_dir]}{wildcards.sample}/pilon/{wildcards.sample}.vcf {config[results_dir]}{wildcards.sample}/pilon/{wildcards.sample}_full.vcf >> {log} 2>&1
+		{config[scripts_dir]}vcf_cutter.py {config[results_dir]}{wildcards.sample}/pilon/{wildcards.sample}_full.vcf {config[results_dir]}{wildcards.sample}/pilon/{wildcards.sample}.vcf >> {log} 2>&1
+		gzip {config[results_dir]}{wildcards.sample}/pilon/{wildcards.sample}_full.vcf >> {log} 2>&1
+		"""
+
